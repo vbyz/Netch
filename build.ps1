@@ -22,23 +22,21 @@ param (
 	$PublishSingleFile = $True
 )
 
-.\scripts\download.ps1 $OutputPath
+Remove-Item -Recurse -Force $OutputPath -Confirm:$false -ErrorAction Ignore
 
-if ( -Not $? ) {
-	Exit 1
-}
+.\scripts\download.ps1 $OutputPath
 
 Write-Host "Building $Configuration to $OutputPath"
 dotnet publish `
 	-c $Configuration `
-	-r "win-x64" `
-	-p:Platform="x64" `
-	-p:PublishSingleFile=$PublishSingleFile `
+	-r 'win-x64' `
+	-p:Platform='x64' `
 	-p:SelfContained=$SelfContained `
-	-p:PublishTrimmed=$SelfContained `
+	$('--self-contained', '--no-self-contained')[$SelfContained] `
+	-p:PublishTrimmed=$False `
 	-p:PublishReadyToRun=$PublishReadyToRun `
+	-p:PublishSingleFile=$PublishSingleFile `
+	-p:IncludeNativeLibrariesForSelfExtract=$SelfContained `
 	-o $OutputPath `
-	Netch\Netch.csproj
-
-if ($lastExitCode) { exit $lastExitCode } 
-exit 0
+	'.\Netch\Netch.csproj'
+exit $lastExitCode

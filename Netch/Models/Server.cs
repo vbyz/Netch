@@ -1,141 +1,119 @@
-﻿using Netch.Utils;
-using System;
-using System.Collections.Generic;
+﻿using System.Net.Sockets;
 using System.Text.Json.Serialization;
-using System.Threading.Tasks;
+using Netch.Utils;
 
-namespace Netch.Models
+namespace Netch.Models;
+
+public abstract class Server : ICloneable
 {
-    public class Server : ICloneable
+    /// <summary>
+    ///     延迟
+    /// </summary>
+    [JsonIgnore]
+    public int Delay { get; private set; } = -1;
+
+    /// <summary>
+    ///     组
+    /// </summary>
+    public string Group { get; set; } = Constants.DefaultGroup;
+
+    /// <summary>
+    ///     地址
+    /// </summary>
+    public string Hostname { get; set; } = string.Empty;
+
+    /// <summary>
+    ///     端口
+    /// </summary>
+    public ushort Port { get; set; }
+
+    /// <summary>
+    ///     倍率
+    /// </summary>
+    public double Rate { get; } = 1.0;
+
+    /// <summary>
+    ///     备注
+    /// </summary>
+    public string Remark { get; set; } = "";
+
+    /// <summary>
+    ///     代理类型
+    /// </summary>
+    [JsonPropertyOrder(int.MinValue)]
+    public abstract string Type { get; }
+
+    public object Clone()
     {
-        /// <summary>
-        ///     延迟
-        /// </summary>
-        [JsonIgnore]
-        public int Delay { get; private set; } = -1;
-
-        /// <summary>
-        ///     组
-        /// </summary>
-        public string Group { get; set; } = "None";
-
-        /// <summary>
-        ///     地址
-        /// </summary>
-        public string Hostname { get; set; } = string.Empty;
-
-        /// <summary>
-        ///     端口
-        /// </summary>
-        public ushort Port { get; set; }
-
-        /// <summary>
-        ///     倍率
-        /// </summary>
-        public double Rate { get; } = 1.0;
-
-        /// <summary>
-        ///     备注
-        /// </summary>
-        public string Remark { get; set; } = "";
-
-        /// <summary>
-        ///     代理类型
-        /// </summary>
-        public virtual string Type { get; } = string.Empty;
-
-        [JsonExtensionData]
-        // ReSharper disable once CollectionNeverUpdated.Global
-        public Dictionary<string, object> ExtensionData { get; set; } = new();
-
-        public object Clone()
-        {
-            return MemberwiseClone();
-        }
-
-        /// <summary>
-        ///     获取备注
-        /// </summary>
-        /// <returns>备注</returns>
-        public override string ToString()
-        {
-            var remark = string.IsNullOrWhiteSpace(Remark) ? $"{Hostname}:{Port}" : Remark;
-
-            if (Group.Equals("None") || Group.Equals(""))
-                Group = "NONE";
-
-            string shortName;
-            if (Type == string.Empty)
-            {
-                shortName = "WTF";
-            }
-            else
-            {
-                shortName = ServerHelper.GetUtilByTypeName(Type).ShortName;
-            }
-
-            return $"[{shortName}][{Group}] {remark}";
-        }
-
-        /// <summary>
-        ///     测试延迟
-        /// </summary>
-        /// <returns>延迟</returns>
-        public int Test()
-        {
-            try
-            {
-                var destination = DnsUtils.Lookup(Hostname);
-                if (destination == null)
-                    return Delay = -2;
-
-                var list = new Task<int>[3];
-                for (var i = 0; i < 3; i++)
-                    list[i] = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            return Global.Settings.ServerTCPing
-                                ? await Utils.Utils.TCPingAsync(destination, Port)
-                                : Utils.Utils.ICMPing(destination, Port);
-                        }
-                        catch (Exception)
-                        {
-                            return -4;
-                        }
-                    });
-
-                Task.WaitAll(list[0], list[1], list[2]);
-
-                var min = Math.Min(list[0].Result, list[1].Result);
-                min = Math.Min(min, list[2].Result);
-                return Delay = min;
-            }
-            catch (Exception)
-            {
-                return Delay = -4;
-            }
-        }
+        return MemberwiseClone();
     }
 
-    public static class ServerExtension
+    /// <summary>
+    ///     获取备注
+    /// </summary>
+    /// <returns>备注</returns>
+    public override string ToString()
     {
-        public static string AutoResolveHostname(this Server server)
-        {
-            return Global.Settings.ResolveServerHostname ? DnsUtils.Lookup(server.Hostname)!.ToString() : server.Hostname;
-        }
+        var remark = string.IsNullOrWhiteSpace(Remark) ? $"{Hostname}:{Port}" : Remark;
 
-        public static bool Valid(this Server server)
+        var shortName = ServerHelper.GetUtilByTypeName(Type).ShortName;
+
+        return $"[{shortName}][{Group}] {remark}";
+    }
+
+    public abstract string MaskedData();
+
+    /// <summary>
+    ///     测试延迟
+    /// </summary>
+    /// <returns>延迟</returns>
+    public async Task<int> PingAsync()
+    {
+        try
         {
-            try
+            var destination = await DnsUtils.LookupAsync(Hostname);
+            if (destination == null)
+                return Delay = -2;
+
+            var list = new Task<int>[3];
+            for (var i = 0; i < 3; i++)
             {
-                ServerHelper.GetTypeByTypeName(server.Type);
-                return true;
+                Task<int> PingCoreAsync()
+                {
+                    try
+                    {
+                        return Global.Settings.ServerTCPing ? Utils.Utils.TCPingAsync(destination, Port) : Utils.Utils.ICMPingAsync(destination);
+                    }
+                    catch (Exception)
+                    {
+                        return Task.FromResult(-4);
+                    }
+                }
+
+                list[i] = PingCoreAsync();
             }
-            catch
-            {
-                return false;
-            }
+
+            var resTask = await Task.WhenAny(list[0], list[1], list[2]);
+
+            return Delay = await resTask;
         }
+        catch (Exception)
+        {
+            return Delay = -4;
+        }
+    }
+}
+
+public static class ServerExtension
+{
+    public static async Task<string> AutoResolveHostnameAsync(this Server server, AddressFamily inet = AddressFamily.Unspecified)
+    {
+        // ! MainController cached
+        return (await DnsUtils.LookupAsync(server.Hostname, inet))!.ToString();
+    }
+
+    public static bool IsInGroup(this Server server)
+    {
+        return server.Group is not Constants.DefaultGroup;
     }
 }

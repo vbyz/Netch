@@ -1,52 +1,53 @@
-﻿using Netch.Controllers;
-using Netch.Models;
-using Netch.Servers.Trojan.Models;
-using System.Collections.Generic;
-using System.IO;
+﻿using System.Net;
 using System.Text.Json;
+using Netch.Controllers;
+using Netch.Interfaces;
+using Netch.Models;
+using Netch.Utils;
 
-namespace Netch.Servers.Trojan
+namespace Netch.Servers;
+
+public class TrojanController : Guard, IServerController
 {
-    public class TrojanController : Guard, IServerController
+    public TrojanController() : base("Trojan.exe")
     {
-        public override string MainFile { get; protected set; } = "Trojan.exe";
+    }
 
-        protected override IEnumerable<string> StartedKeywords { get; set; } = new[] { "started" };
+    protected override IEnumerable<string> StartedKeywords => new[] { "started" };
 
-        protected override IEnumerable<string> StoppedKeywords { get; set; } = new[] { "exiting" };
+    protected override IEnumerable<string> FailedKeywords => new[] { "exiting" };
 
-        public override string Name { get; } = "Trojan";
+    public override string Name => "Trojan";
 
-        public ushort? Socks5LocalPort { get; set; }
+    public ushort? Socks5LocalPort { get; set; }
 
-        public string? LocalAddress { get; set; }
+    public string? LocalAddress { get; set; }
 
-        public void Start(in Server s, in Mode mode)
+    public async Task<Socks5Server> StartAsync(Server s)
+    {
+        var server = (TrojanServer)s;
+        var trojanConfig = new TrojanConfig
         {
-            var server = (Trojan)s;
-            var trojanConfig = new TrojanConfig
+            local_addr = this.LocalAddress(),
+            local_port = this.Socks5LocalPort(),
+            remote_addr = await server.AutoResolveHostnameAsync(),
+            remote_port = server.Port,
+            password = new List<string>
             {
-                local_addr = this.LocalAddress(),
-                local_port = this.Socks5LocalPort(),
-                remote_addr = server.Hostname,
-                remote_port = server.Port,
-                password = new List<string>
-                {
-                    server.Password
-                }
-            };
+                server.Password
+            },
+            ssl = new TrojanSSL
+            {
+                sni = server.Host.ValueOrDefault() ?? server.Hostname
+            }
+        };
 
-            if (!string.IsNullOrWhiteSpace(server.Host))
-                trojanConfig.ssl.sni = server.Host;
-
-            File.WriteAllBytes("data\\last.json", JsonSerializer.SerializeToUtf8Bytes(trojanConfig, Global.NewDefaultJsonSerializerOptions));
-
-            StartInstanceAuto("-c ..\\data\\last.json");
-        }
-
-        public override void Stop()
+        await using (var fileStream = new FileStream(Constants.TempConfig, FileMode.Create, FileAccess.Write, FileShare.Read))
         {
-            StopInstance();
+            await JsonSerializer.SerializeAsync(fileStream, trojanConfig, Global.NewCustomJsonSerializerOptions());
         }
+
+        await StartGuardAsync("-c ..\\data\\last.json");
+        return new Socks5Server(IPAddress.Loopback.ToString(), this.Socks5LocalPort(), server.Hostname);
     }
 }

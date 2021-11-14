@@ -1,72 +1,83 @@
-﻿using System;
-using System.Collections;
-using System.Collections.Generic;
-using System.Linq;
+﻿using System.Collections;
 using System.Net;
+using System.Net.Sockets;
 
-namespace Netch.Utils
+namespace Netch.Utils;
+
+public static class DnsUtils
 {
-    public static class DnsUtils
+    /// <summary>
+    ///     缓存
+    /// </summary>
+    private static readonly Hashtable Cache = new();
+    private static readonly Hashtable Cache6 = new();
+
+    public static async Task<IPAddress?> LookupAsync(string hostname, AddressFamily inet = AddressFamily.Unspecified, int timeout = 3000)
     {
-        /// <summary>
-        ///     缓存
-        /// </summary>
-        private static readonly Hashtable Cache = new();
-
-        /// <summary>
-        ///     查询
-        /// </summary>
-        /// <param name="hostname">主机名</param>
-        /// <returns></returns>
-        public static IPAddress? Lookup(string hostname)
+        try
         {
-            try
+            var cacheResult = inet switch
             {
-                if (Cache.Contains(hostname))
-                    return Cache[hostname] as IPAddress;
+                AddressFamily.Unspecified => (IPAddress?)(Cache[hostname] ?? Cache6[hostname]),
+                AddressFamily.InterNetwork => (IPAddress?)Cache[hostname],
+                AddressFamily.InterNetworkV6 => (IPAddress?)Cache6[hostname],
+                _ => throw new ArgumentOutOfRangeException()
+            };
 
-                var task = Dns.GetHostAddressesAsync(hostname);
-                if (!task.Wait(1000))
-                    return null;
+            if (cacheResult != null)
+                return cacheResult;
 
-                if (task.Result.Length == 0)
-                    return null;
+            return await LookupNoCacheAsync(hostname, inet, timeout);
+        }
+        catch (Exception e)
+        {
+            Log.Verbose(e, "Lookup hostname {Hostname} failed", hostname);
+            return null;
+        }
+    }
 
-                Cache.Add(hostname, task.Result[0]);
+    private static async Task<IPAddress?> LookupNoCacheAsync(string hostname, AddressFamily inet = AddressFamily.Unspecified, int timeout = 3000)
+    {
+        using var task = Dns.GetHostAddressesAsync(hostname);
+        using var resTask = await Task.WhenAny(task, Task.Delay(timeout));
 
-                return task.Result[0];
-            }
-            catch (Exception)
-            {
+        if (resTask == task)
+        {
+            var addresses = await task;
+
+            var result = addresses.FirstOrDefault(i => inet == AddressFamily.Unspecified || inet == i.AddressFamily);
+            if (result == null)
                 return null;
+
+            switch (result.AddressFamily)
+            {
+                case AddressFamily.InterNetwork:
+                    Cache.Add(hostname, result);
+                    break;
+                case AddressFamily.InterNetworkV6:
+                    Cache6.Add(hostname, result);
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException();
             }
+
+            return result;
         }
 
-        /// <summary>
-        ///     查询
-        /// </summary>
-        /// <param name="hostname">主机名</param>
-        /// <returns></returns>
-        public static void ClearCache()
-        {
-            Cache.Clear();
-        }
+        return null;
+    }
 
-        public static IEnumerable<string> Split(string dns)
-        {
-            return dns.SplitRemoveEmptyEntriesAndTrimEntries(',');
-        }
+    public static void ClearCache()
+    {
+        Cache.Clear();
+        Cache6.Clear();
+    }
 
-        public static bool TrySplit(string value, out IEnumerable<string> result, ushort maxCount = 0)
-        {
-            result = Split(value).ToArray();
+    public static string AppendPort(string host, ushort port = 53)
+    {
+        if (!host.Contains(':'))
+            return host + $":{port}";
 
-            return maxCount == 0 || result.Count() <= maxCount && result.All(ip => IPAddress.TryParse(ip, out _));
-        }
-
-        public static string Join(IEnumerable<string> dns)
-        {
-            return string.Join(",", dns);
-        }
+        return host;
     }
 }

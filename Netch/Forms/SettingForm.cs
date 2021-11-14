@@ -1,338 +1,286 @@
-using Netch.Models;
+using System.Net;
 using Netch.Properties;
 using Netch.Utils;
-using System;
-using System.Collections.Generic;
-using System.Drawing;
-using System.IO;
-using System.Linq;
-using System.Net;
-using System.Windows.Forms;
 
-namespace Netch.Forms
+namespace Netch.Forms;
+
+[Fody.ConfigureAwait(true)]
+public partial class SettingForm : BindingForm
 {
-    public partial class SettingForm : Form
+    public SettingForm()
     {
-        private readonly Dictionary<Control, Func<string, bool>> _checkActions = new();
+        InitializeComponent();
+        Icon = Resources.icon;
+        i18N.TranslateForm(this);
 
-        private readonly Dictionary<Control, Action<Control>> _saveActions = new();
+        #region General
 
-        public SettingForm()
+        BindTextBox<ushort>(Socks5PortTextBox, p => true, p => Global.Settings.Socks5LocalPort = p, Global.Settings.Socks5LocalPort);
+
+        BindCheckBox(AllowDevicesCheckBox,
+            c => Global.Settings.LocalAddress = AllowDevicesCheckBox.Checked ? "0.0.0.0" : "127.0.0.1",
+            Global.Settings.LocalAddress switch { "127.0.0.1" => false, "0.0.0.0" => true, _ => false });
+
+        BindRadioBox(ICMPingRadioBtn, _ => { }, !Global.Settings.ServerTCPing);
+
+        BindRadioBox(TCPingRadioBtn, c => Global.Settings.ServerTCPing = c, Global.Settings.ServerTCPing);
+
+        BindTextBox<int>(ProfileCountTextBox, i => i > -1, i => Global.Settings.ProfileCount = i, Global.Settings.ProfileCount);
+        BindTextBox<int>(DetectionTickTextBox,
+            i => DelayTestHelper.Range.InRange(i),
+            i => Global.Settings.DetectionTick = i,
+            Global.Settings.DetectionTick);
+
+        BindTextBox<int>(StartedPingIntervalTextBox, _ => true, i => Global.Settings.StartedPingInterval = i, Global.Settings.StartedPingInterval);
+
+        object[]? stuns;
+        try
         {
-            InitializeComponent();
-            Icon = Resources.icon;
-            i18N.TranslateForm(this);
+            stuns = File.ReadLines(Constants.STUNServersFile).Cast<object>().ToArray();
+        }
+        catch (Exception e)
+        {
+            Log.Warning(e, "Load stun.txt failed");
+            stuns = null;
+        }
 
-            #region General
-
-            BindTextBox<ushort>(Socks5PortTextBox,
-                p => p.ToString() != HTTPPortTextBox.Text,
-                p => Global.Settings.Socks5LocalPort = p,
-                Global.Settings.Socks5LocalPort);
-
-            BindTextBox<ushort>(HTTPPortTextBox,
-                p => p.ToString() != Socks5PortTextBox.Text,
-                p => Global.Settings.HTTPLocalPort = p,
-                Global.Settings.HTTPLocalPort);
-
-            BindCheckBox(AllowDevicesCheckBox,
-                c => Global.Settings.LocalAddress = AllowDevicesCheckBox.Checked ? "0.0.0.0" : "127.0.0.1",
-                Global.Settings.LocalAddress switch { "127.0.0.1" => false, "0.0.0.0" => true, _ => false });
-
-            BindCheckBox(ResolveServerHostnameCheckBox, c => Global.Settings.ResolveServerHostname = c, Global.Settings.ResolveServerHostname);
-
-            BindRadioBox(ICMPingRadioBtn, _ => { }, !Global.Settings.ServerTCPing);
-
-            BindRadioBox(TCPingRadioBtn, c => Global.Settings.ServerTCPing = c, Global.Settings.ServerTCPing);
-
-            BindTextBox<int>(ProfileCountTextBox, i => i > -1, i => Global.Settings.ProfileCount = i, Global.Settings.ProfileCount);
-            BindTextBox<int>(DetectionTickTextBox,
-                i => ServerHelper.DelayTestHelper.Range.InRange(i),
-                i => Global.Settings.DetectionTick = i,
-                Global.Settings.DetectionTick);
-
-            BindTextBox<int>(StartedPingIntervalTextBox,
-                _ => true,
-                i => Global.Settings.StartedPingInterval = i,
-                Global.Settings.StartedPingInterval);
-
-            object[]? stuns;
-            try
+        BindComboBox(STUN_ServerComboBox,
+            s =>
             {
-                stuns = File.ReadLines("bin\\stun.txt").Cast<object>().ToArray();
-            }
-            catch (Exception e)
-            {
-                Global.Logger.Warning($"Load stun.txt failed: {e.Message}");
-                stuns = null;
-            }
+                var split = s.SplitRemoveEmptyEntriesAndTrimEntries(':');
+                if (!split.Any())
+                    return false;
 
-            BindComboBox(STUN_ServerComboBox,
-                s =>
-                {
-                    var split = s.SplitRemoveEmptyEntriesAndTrimEntries(':');
-                    if (!split.Any())
+                var port = split.ElementAtOrDefault(1);
+                if (port != null)
+                    if (!ushort.TryParse(split[1], out _))
                         return false;
 
-                    var port = split.ElementAtOrDefault(1);
-                    if (port != null)
-                        if (!ushort.TryParse(split[1], out _))
-                            return false;
+                return true;
+            },
+            o =>
+            {
+                var split = o.ToString().SplitRemoveEmptyEntriesAndTrimEntries(':');
+                Global.Settings.STUN_Server = split[0];
 
-                    return true;
-                },
-                o =>
-                {
-                    var split = o.ToString().SplitRemoveEmptyEntriesAndTrimEntries(':');
-                    Global.Settings.STUN_Server = split[0];
+                var port = split.ElementAtOrDefault(1);
+                Global.Settings.STUN_Server_Port = port != null ? ushort.Parse(port) : 3478;
+            },
+            Global.Settings.STUN_Server + ":" + Global.Settings.STUN_Server_Port,
+            stuns);
 
-                    var port = split.ElementAtOrDefault(1);
-                    Global.Settings.STUN_Server_Port = port != null ? ushort.Parse(port) : 3478;
-                },
-                Global.Settings.STUN_Server + ":" + Global.Settings.STUN_Server_Port,
-                stuns);
+        BindListComboBox(LanguageComboBox, o => Global.Settings.Language = o.ToString(), i18N.GetTranslateList(), Global.Settings.Language);
 
-            BindListComboBox(LanguageComboBox, o => Global.Settings.Language = o.ToString(), i18N.GetTranslateList(), Global.Settings.Language);
+        #endregion
 
-            #endregion
+        #region Process Mode
 
-            #region Process Mode
+        BindCheckBox(FilterTCPCheckBox, b => Global.Settings.Redirector.FilterTCP = b, Global.Settings.Redirector.FilterTCP);
 
-            BindCheckBox(DNSHijackCheckBox, b => Global.Settings.Redirector.DNSHijack = b, Global.Settings.Redirector.DNSHijack);
+        BindCheckBox(FilterUDPCheckBox, b => Global.Settings.Redirector.FilterUDP = b, Global.Settings.Redirector.FilterUDP);
 
-            BindTextBox(DNSHijackHostTextBox, s => true, s => Global.Settings.Redirector.DNSHijackHost = s, Global.Settings.Redirector.DNSHijackHost);
+        BindCheckBox(FilterICMPCheckBox, b => Global.Settings.Redirector.FilterICMP = b, Global.Settings.Redirector.FilterICMP);
 
-            BindCheckBox(ICMPHijackCheckBox, b => Global.Settings.Redirector.ICMPHijack = b, Global.Settings.Redirector.ICMPHijack);
+        BindTextBox<int>(ICMPDelayTextBox, s => true, s => Global.Settings.Redirector.ICMPDelay = s, Global.Settings.Redirector.ICMPDelay);
 
-            BindTextBox(ICMPHijackHostTextBox,
-                s => IPAddress.TryParse(s, out _),
-                s => Global.Settings.Redirector.ICMPHost = s,
-                Global.Settings.Redirector.ICMPHost);
+        BindCheckBox(FilterDNSCheckBox, b => Global.Settings.Redirector.FilterDNS = b, Global.Settings.Redirector.FilterDNS);
 
-            BindCheckBox(RedirectorSSCheckBox, s => Global.Settings.Redirector.RedirectorSS = s, Global.Settings.Redirector.RedirectorSS);
+        // TODO validate Redirector AioDNS DNS
+        BindTextBox(DNSHijackHostTextBox, s => true, s => Global.Settings.Redirector.DNSHost = s, Global.Settings.Redirector.DNSHost);
 
-            BindCheckBox(ChildProcessHandleCheckBox,
-                s => Global.Settings.Redirector.ChildProcessHandle = s,
-                Global.Settings.Redirector.ChildProcessHandle);
+        BindCheckBox(ChildProcessHandleCheckBox, s => Global.Settings.Redirector.FilterParent = s, Global.Settings.Redirector.FilterParent);
 
-            BindListComboBox(ProcessProxyProtocolComboBox,
-                s => Global.Settings.Redirector.ProxyProtocol = (PortType)Enum.Parse(typeof(PortType), s.ToString(), false),
-                Enum.GetNames(typeof(PortType)),
-                Global.Settings.Redirector.ProxyProtocol.ToString());
+        BindCheckBox(DNSProxyCheckBox, b => Global.Settings.Redirector.DNSProxy = b, Global.Settings.Redirector.DNSProxy);
 
-            #endregion
+        BindCheckBox(HandleProcDNSCheckBox, b => Global.Settings.Redirector.HandleOnlyDNS = b, Global.Settings.Redirector.HandleOnlyDNS);
 
-            #region TUN/TAP
+        #endregion
 
-            BindTextBox(TUNTAPAddressTextBox,
-                s => IPAddress.TryParse(s, out _),
-                s => Global.Settings.TUNTAP.Address = s,
-                Global.Settings.TUNTAP.Address);
+        #region TUN/TAP
 
-            BindTextBox(TUNTAPNetmaskTextBox,
-                s => IPAddress.TryParse(s, out _),
-                s => Global.Settings.TUNTAP.Netmask = s,
-                Global.Settings.TUNTAP.Netmask);
+        BindTextBox(TUNTAPAddressTextBox, s => IPAddress.TryParse(s, out _), s => Global.Settings.TUNTAP.Address = s, Global.Settings.TUNTAP.Address);
 
-            BindTextBox(TUNTAPGatewayTextBox,
-                s => IPAddress.TryParse(s, out _),
-                s => Global.Settings.TUNTAP.Gateway = s,
-                Global.Settings.TUNTAP.Gateway);
+        BindTextBox(TUNTAPNetmaskTextBox, s => IPAddress.TryParse(s, out _), s => Global.Settings.TUNTAP.Netmask = s, Global.Settings.TUNTAP.Netmask);
 
-            BindCheckBox(UseCustomDNSCheckBox, b => { Global.Settings.TUNTAP.UseCustomDNS = b; }, Global.Settings.TUNTAP.UseCustomDNS);
+        BindTextBox(TUNTAPGatewayTextBox, s => IPAddress.TryParse(s, out _), s => Global.Settings.TUNTAP.Gateway = s, Global.Settings.TUNTAP.Gateway);
 
-            BindTextBox(TUNTAPDNSTextBox,
-                _ => true,
-                s =>
-                {
-                    if (UseCustomDNSCheckBox.Checked)
-                        Global.Settings.TUNTAP.HijackDNS = s;
-                },
-                Global.Settings.TUNTAP.HijackDNS);
+        BindCheckBox(UseCustomDNSCheckBox, b => { Global.Settings.TUNTAP.UseCustomDNS = b; }, Global.Settings.TUNTAP.UseCustomDNS);
 
-            BindCheckBox(ProxyDNSCheckBox, b => Global.Settings.TUNTAP.ProxyDNS = b, Global.Settings.TUNTAP.ProxyDNS);
+        BindTextBox(TUNTAPDNSTextBox,
+            s => IPAddress.TryParse(s, out _),
+            s =>
+            {
+                if (UseCustomDNSCheckBox.Checked)
+                    Global.Settings.TUNTAP.DNS = s;
+            },
+            Global.Settings.TUNTAP.DNS);
 
-            #endregion
+        BindCheckBox(ProxyDNSCheckBox, b => Global.Settings.TUNTAP.ProxyDNS = b, Global.Settings.TUNTAP.ProxyDNS);
 
-            #region V2Ray
+        #endregion
 
-            BindCheckBox(XrayConeCheckBox, b => Global.Settings.V2RayConfig.XrayCone = b, Global.Settings.V2RayConfig.XrayCone);
+        #region V2Ray
 
-            BindCheckBox(TLSAllowInsecureCheckBox, b => Global.Settings.V2RayConfig.AllowInsecure = b, Global.Settings.V2RayConfig.AllowInsecure);
-            BindCheckBox(UseMuxCheckBox, b => Global.Settings.V2RayConfig.UseMux = b, Global.Settings.V2RayConfig.UseMux);
+        BindCheckBox(XrayConeCheckBox, b => Global.Settings.V2RayConfig.XrayCone = b, Global.Settings.V2RayConfig.XrayCone);
 
-            BindTextBox<int>(mtuTextBox, i => true, i => Global.Settings.V2RayConfig.KcpConfig.mtu = i, Global.Settings.V2RayConfig.KcpConfig.mtu);
-            BindTextBox<int>(ttiTextBox, i => true, i => Global.Settings.V2RayConfig.KcpConfig.tti = i, Global.Settings.V2RayConfig.KcpConfig.tti);
-            BindTextBox<int>(uplinkCapacityTextBox,
-                i => true,
-                i => Global.Settings.V2RayConfig.KcpConfig.uplinkCapacity = i,
-                Global.Settings.V2RayConfig.KcpConfig.uplinkCapacity);
+        BindCheckBox(TLSAllowInsecureCheckBox, b => Global.Settings.V2RayConfig.AllowInsecure = b, Global.Settings.V2RayConfig.AllowInsecure);
+        BindCheckBox(UseMuxCheckBox, b => Global.Settings.V2RayConfig.UseMux = b, Global.Settings.V2RayConfig.UseMux);
 
-            BindTextBox<int>(downlinkCapacityTextBox,
-                i => true,
-                i => Global.Settings.V2RayConfig.KcpConfig.downlinkCapacity = i,
-                Global.Settings.V2RayConfig.KcpConfig.downlinkCapacity);
+        BindTextBox<int>(mtuTextBox, i => true, i => Global.Settings.V2RayConfig.KcpConfig.mtu = i, Global.Settings.V2RayConfig.KcpConfig.mtu);
+        BindTextBox<int>(ttiTextBox, i => true, i => Global.Settings.V2RayConfig.KcpConfig.tti = i, Global.Settings.V2RayConfig.KcpConfig.tti);
+        BindTextBox<int>(uplinkCapacityTextBox,
+            i => true,
+            i => Global.Settings.V2RayConfig.KcpConfig.uplinkCapacity = i,
+            Global.Settings.V2RayConfig.KcpConfig.uplinkCapacity);
 
-            BindTextBox<int>(readBufferSizeTextBox,
-                i => true,
-                i => Global.Settings.V2RayConfig.KcpConfig.readBufferSize = i,
-                Global.Settings.V2RayConfig.KcpConfig.readBufferSize);
+        BindTextBox<int>(downlinkCapacityTextBox,
+            i => true,
+            i => Global.Settings.V2RayConfig.KcpConfig.downlinkCapacity = i,
+            Global.Settings.V2RayConfig.KcpConfig.downlinkCapacity);
 
-            BindTextBox<int>(writeBufferSizeTextBox,
-                i => true,
-                i => Global.Settings.V2RayConfig.KcpConfig.writeBufferSize = i,
-                Global.Settings.V2RayConfig.KcpConfig.writeBufferSize);
+        BindTextBox<int>(readBufferSizeTextBox,
+            i => true,
+            i => Global.Settings.V2RayConfig.KcpConfig.readBufferSize = i,
+            Global.Settings.V2RayConfig.KcpConfig.readBufferSize);
 
-            BindCheckBox(congestionCheckBox,
-                b => Global.Settings.V2RayConfig.KcpConfig.congestion = b,
-                Global.Settings.V2RayConfig.KcpConfig.congestion);
+        BindTextBox<int>(writeBufferSizeTextBox,
+            i => true,
+            i => Global.Settings.V2RayConfig.KcpConfig.writeBufferSize = i,
+            Global.Settings.V2RayConfig.KcpConfig.writeBufferSize);
 
-            #endregion
+        BindCheckBox(congestionCheckBox, b => Global.Settings.V2RayConfig.KcpConfig.congestion = b, Global.Settings.V2RayConfig.KcpConfig.congestion);
 
-            #region Others
+        #endregion
 
-            BindCheckBox(ExitWhenClosedCheckBox, b => Global.Settings.ExitWhenClosed = b, Global.Settings.ExitWhenClosed);
+        #region Others
 
-            BindCheckBox(StopWhenExitedCheckBox, b => Global.Settings.StopWhenExited = b, Global.Settings.StopWhenExited);
+        BindCheckBox(ExitWhenClosedCheckBox, b => Global.Settings.ExitWhenClosed = b, Global.Settings.ExitWhenClosed);
 
-            BindCheckBox(StartWhenOpenedCheckBox, b => Global.Settings.StartWhenOpened = b, Global.Settings.StartWhenOpened);
+        BindCheckBox(StopWhenExitedCheckBox, b => Global.Settings.StopWhenExited = b, Global.Settings.StopWhenExited);
 
-            BindCheckBox(MinimizeWhenStartedCheckBox, b => Global.Settings.MinimizeWhenStarted = b, Global.Settings.MinimizeWhenStarted);
+        BindCheckBox(StartWhenOpenedCheckBox, b => Global.Settings.StartWhenOpened = b, Global.Settings.StartWhenOpened);
 
-            BindCheckBox(RunAtStartupCheckBox, b => Global.Settings.RunAtStartup = b, Global.Settings.RunAtStartup);
+        BindCheckBox(MinimizeWhenStartedCheckBox, b => Global.Settings.MinimizeWhenStarted = b, Global.Settings.MinimizeWhenStarted);
 
-            BindCheckBox(CheckUpdateWhenOpenedCheckBox, b => Global.Settings.CheckUpdateWhenOpened = b, Global.Settings.CheckUpdateWhenOpened);
+        BindCheckBox(RunAtStartupCheckBox, b => Global.Settings.RunAtStartup = b, Global.Settings.RunAtStartup);
 
-            BindCheckBox(CheckBetaUpdateCheckBox, b => Global.Settings.CheckBetaUpdate = b, Global.Settings.CheckBetaUpdate);
+        BindCheckBox(CheckUpdateWhenOpenedCheckBox, b => Global.Settings.CheckUpdateWhenOpened = b, Global.Settings.CheckUpdateWhenOpened);
 
-            BindCheckBox(UpdateServersWhenOpenedCheckBox, b => Global.Settings.UpdateServersWhenOpened = b, Global.Settings.UpdateServersWhenOpened);
+        BindCheckBox(CheckBetaUpdateCheckBox, b => Global.Settings.CheckBetaUpdate = b, Global.Settings.CheckBetaUpdate);
 
-            #endregion
+        BindCheckBox(UpdateServersWhenOpenedCheckBox, b => Global.Settings.UpdateServersWhenOpened = b, Global.Settings.UpdateServersWhenOpened);
 
-            #region AioDNS
+        BindCheckBox(NoSupportDialogCheckBox, b => Global.Settings.NoSupportDialog = b, Global.Settings.NoSupportDialog);
 
-            BindTextBox(AioDNSRulePathTextBox, _ => true, s => Global.Settings.AioDNS.RulePath = s, Global.Settings.AioDNS.RulePath);
+        #endregion
 
-            BindTextBox(ChinaDNSTextBox, _ => true, s => Global.Settings.AioDNS.ChinaDNS = s, Global.Settings.AioDNS.ChinaDNS);
+        #region AioDNS
 
-            BindTextBox(OtherDNSTextBox, _ => true, s => Global.Settings.AioDNS.OtherDNS = s, Global.Settings.AioDNS.OtherDNS);
+        BindTextBox(ChinaDNSTextBox, _ => true, s => Global.Settings.AioDNS.ChinaDNS = s, Global.Settings.AioDNS.ChinaDNS);
 
-            #endregion
-        }
+        BindTextBox(OtherDNSTextBox, _ => true, s => Global.Settings.AioDNS.OtherDNS = s, Global.Settings.AioDNS.OtherDNS);
 
-        private void SettingForm_Load(object sender, EventArgs e)
+        BindTextBox(AioDNSListenPortTextBox,
+            s => ushort.TryParse(s, out _),
+            s => Global.Settings.AioDNS.ListenPort = ushort.Parse(s),
+            Global.Settings.AioDNS.ListenPort);
+
+        #endregion
+    }
+
+    private void SettingForm_Load(object sender, EventArgs e)
+    {
+        TUNTAPUseCustomDNSCheckBox_CheckedChanged(null, null);
+    }
+
+    protected override void BindTextBox<T>(TextBoxBase control, Func<T, bool> check, Action<T> save, object value)
+    {
+        base.BindTextBox(control, check, save, value);
+        control.TextChanged += (_, _) =>
         {
-            TUNTAPUseCustomDNSCheckBox_CheckedChanged(null, null);
-        }
-
-        private void TUNTAPUseCustomDNSCheckBox_CheckedChanged(object? sender, EventArgs? e)
-        {
-            if (UseCustomDNSCheckBox.Checked)
-                TUNTAPDNSTextBox.Text = Global.Settings.TUNTAP.HijackDNS;
+            if (Validate(control))
+            {
+                errorProvider.SetError(control, null);
+            }
             else
-                TUNTAPDNSTextBox.Text = "AioDNS";
-        }
+            {
+                errorProvider.SetError(control, i18N.Translate("Invalid value"));
+            }
+        };
+    }
 
-        private void GlobalBypassIPsButton_Click(object sender, EventArgs e)
+    protected new void BindComboBox(ComboBox control, Func<string, bool> check, Action<string> save, string value, object[]? values = null)
+    {
+        base.BindComboBox(control, check, save, value, values);
+
+        control.TextChanged += (_, _) =>
         {
-            Hide();
-            new GlobalBypassIPForm().ShowDialog();
-            Show();
-        }
+            if (Validate(control))
+            {
+                errorProvider.SetError(control, null);
+            }
+            else
+            {
+                errorProvider.SetError(control, i18N.Translate("Invalid value"));
+            }
+        };
+    }
 
-        private void ControlButton_Click(object sender, EventArgs e)
+    private void TUNTAPUseCustomDNSCheckBox_CheckedChanged(object? sender, EventArgs? e)
+    {
+        if (UseCustomDNSCheckBox.Checked)
+            TUNTAPDNSTextBox.Text = Global.Settings.TUNTAP.DNS;
+        else
+            TUNTAPDNSTextBox.Text = "AioDNS";
+    }
+
+    private void GlobalBypassIPsButton_Click(object sender, EventArgs e)
+    {
+        Hide();
+        new GlobalBypassIPForm().ShowDialog();
+        Show();
+    }
+
+    private async void ControlButton_Click(object sender, EventArgs e)
+    {
+        Utils.Utils.ComponentIterator(this, component => Utils.Utils.ChangeControlForeColor(component, Color.Black));
+
+        #region Check
+
+        var checkNotPassControl = GetInvalidateValueControls();
+
+        if (checkNotPassControl.Any())
         {
-            Utils.Utils.ComponentIterator(this, component => Utils.Utils.ChangeControlForeColor(component, Color.Black));
+            var failControl = checkNotPassControl.First();
 
-            #region Check
-
-            var checkNotPassControl = _checkActions.Where(pair => !pair.Value.Invoke(pair.Key.Text)).Select(pair => pair.Key).ToList();
-            foreach (Control control in checkNotPassControl)
-                Utils.Utils.ChangeControlForeColor(control, Color.Red);
-
-            if (checkNotPassControl.Any())
-                return;
-
-            #endregion
-
-            #region Save
-
-            foreach (var pair in _saveActions)
-                pair.Value.Invoke(pair.Key);
-
-            #endregion
-
-            Utils.Utils.RegisterNetchStartupItem();
-
-            Configuration.Save();
-            MessageBoxX.Show(i18N.Translate("Saved"));
-            Close();
-        }
-
-        #region BindUtils
-
-        private void BindTextBox(TextBox control, Func<string, bool> check, Action<string> save, object value)
-        {
-            BindTextBox<string>(control, check, save, value);
-        }
-
-        private void BindTextBox<T>(TextBox control, Func<T, bool> check, Action<T> save, object value)
-        {
-            control.Text = value.ToString();
-            _checkActions.Add(control,
-                s =>
+            // switch to fail control's tab page
+            var p = failControl.Parent;
+            while (p != null)
+            {
+                if (p is TabPage tabPage)
                 {
-                    try
-                    {
-                        return check.Invoke((T)Convert.ChangeType(s, typeof(T)));
-                    }
-                    catch
-                    {
-                        return false;
-                    }
-                });
+                    TabControl.SelectedTab = tabPage;
+                    break;
+                }
 
-            _saveActions.Add(control, c => save.Invoke((T)Convert.ChangeType(((TextBox)c).Text, typeof(T))));
-        }
+                p = p.Parent;
+            }
 
-        private void BindCheckBox(CheckBox control, Action<bool> save, bool value)
-        {
-            control.Checked = value;
-            _saveActions.Add(control, c => save.Invoke(((CheckBox)c).Checked));
-        }
-
-        private void BindRadioBox(RadioButton control, Action<bool> save, bool value)
-        {
-            control.Checked = value;
-            _saveActions.Add(control, c => save.Invoke(((RadioButton)c).Checked));
-        }
-
-        private void BindListComboBox<T>(ComboBox comboBox, Action<T> save, IEnumerable<T> values, T value) where T : notnull
-        {
-            if (comboBox.DropDownStyle != ComboBoxStyle.DropDownList)
-                throw new ArgumentOutOfRangeException();
-
-            var tagItems = values.Select(o => new TagItem<T>(o, o.ToString()!)).ToArray();
-            comboBox.Items.AddRange(tagItems.Cast<object>().ToArray());
-
-            comboBox.ValueMember = nameof(TagItem<T>.Value);
-            comboBox.DisplayMember = nameof(TagItem<T>.Text);
-
-            _saveActions.Add(comboBox, c => save.Invoke(((TagItem<T>)((ComboBox)c).SelectedItem).Value));
-            Load += (_, _) => { comboBox.SelectedItem = tagItems.SingleOrDefault(t => t.Value.Equals(value)); };
-        }
-
-        private void BindComboBox(ComboBox control, Func<string, bool> check, Action<string> save, string value, object[]? values = null)
-        {
-            if (values != null)
-                control.Items.AddRange(values);
-
-            _saveActions.Add(control, c => save.Invoke(((ComboBox)c).Text));
-            _checkActions.Add(control, check.Invoke);
-
-            Load += (_, _) => { control.Text = value; };
+            return;
         }
 
         #endregion
+
+        #region Save
+
+        SaveBinds();
+
+        #endregion
+
+        Utils.Utils.RegisterNetchStartupItem();
+
+        await Configuration.SaveAsync();
+        MessageBoxX.Show(i18N.Translate("Saved"));
+        Close();
     }
 }

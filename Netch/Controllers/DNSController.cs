@@ -1,32 +1,30 @@
-﻿using System;
-using System.IO;
-using static Netch.Interops.AioDNSInterops;
+﻿using Netch.Interfaces;
+using Netch.Models;
+using static Netch.Interops.AioDNS;
 
-namespace Netch.Controllers
+namespace Netch.Controllers;
+
+public class DNSController : IController
 {
-    public class DNSController : IController
+    public string Name => "DNS Service";
+
+    public async Task StartAsync(string listenAddress)
     {
-        public string Name { get; } = "DNS Service";
+        var aioDnsConfig = Global.Settings.AioDNS;
 
-        public void Stop()
-        {
-            Free();
-        }
+        Dial(NameList.TYPE_REST, "");
+        Dial(NameList.TYPE_LIST, Path.GetFullPath(Constants.AioDnsRuleFile));
+        // TODO remove ListenPort setting
+        Dial(NameList.TYPE_LISN, $"{listenAddress}:{aioDnsConfig.ListenPort}");
+        Dial(NameList.TYPE_CDNS, $"{aioDnsConfig.ChinaDNS}");
+        Dial(NameList.TYPE_ODNS, $"{aioDnsConfig.OtherDNS}");
 
-        /// <summary>
-        ///     启动DNS服务
-        /// </summary>
-        /// <returns></returns>
-        public void Start()
-        {
-            Dial(NameList.TYPE_REST, "");
-            Dial(NameList.TYPE_ADDR, $"{Global.Settings.LocalAddress}:{Global.Settings.AioDNS.ListenPort}");
-            Dial(NameList.TYPE_LIST, Path.GetFullPath(Global.Settings.AioDNS.RulePath));
-            Dial(NameList.TYPE_CDNS, $"{Global.Settings.AioDNS.ChinaDNS}");
-            Dial(NameList.TYPE_ODNS, $"{Global.Settings.AioDNS.OtherDNS}");
+        if (!await InitAsync())
+            throw new MessageException("AioDNS start failed.");
+    }
 
-            if (!Init())
-                throw new Exception("AioDNS start failed");
-        }
+    public Task StopAsync()
+    {
+        return FreeAsync();
     }
 }

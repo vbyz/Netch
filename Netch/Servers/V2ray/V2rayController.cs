@@ -1,41 +1,37 @@
+using System.Net;
+using System.Text.Json;
 using Netch.Controllers;
+using Netch.Interfaces;
 using Netch.Models;
-using Netch.Servers.V2ray.Utils;
-using System.Collections.Generic;
-using System.IO;
 
-namespace Netch.Servers.V2ray
+namespace Netch.Servers;
+
+public class V2rayController : Guard, IServerController
 {
-    public class V2rayController : Guard, IServerController
+    public V2rayController() : base("xray.exe")
     {
-        public override string MainFile { get; protected set; } = "xray.exe";
+        if (!Global.Settings.V2RayConfig.XrayCone)
+            Instance.StartInfo.Environment["XRAY_CONE_DISABLED"] = "true";
+    }
 
-        protected override IEnumerable<string> StartedKeywords { get; set; } = new[] { "started" };
+    protected override IEnumerable<string> StartedKeywords => new[] { "started" };
 
-        protected override IEnumerable<string> StoppedKeywords { get; set; } = new[] { "config file not readable", "failed to" };
+    protected override IEnumerable<string> FailedKeywords => new[] { "config file not readable", "failed to" };
 
-        public override string Name { get; } = "Xray";
+    public override string Name => "Xray";
 
-        public ushort? Socks5LocalPort { get; set; }
+    public ushort? Socks5LocalPort { get; set; }
 
-        public string? LocalAddress { get; set; }
+    public string? LocalAddress { get; set; }
 
-        public virtual void Start(in Server s, in Mode mode)
+    public virtual async Task<Socks5Server> StartAsync(Server s)
+    {
+        await using (var fileStream = new FileStream(Constants.TempConfig, FileMode.Create, FileAccess.Write, FileShare.Read))
         {
-            File.WriteAllText("data\\last.json", V2rayConfigUtils.GenerateClientConfig(s, mode));
-            StartInstanceAuto("-config ..\\data\\last.json");
+            await JsonSerializer.SerializeAsync(fileStream, await V2rayConfigUtils.GenerateClientConfigAsync(s), Global.NewCustomJsonSerializerOptions());
         }
 
-        public override void Stop()
-        {
-            StopInstance();
-        }
-
-        protected override void InitInstance(string argument)
-        {
-            base.InitInstance(argument);
-            if (!Global.Settings.V2RayConfig.XrayCone)
-                Instance!.StartInfo.Environment["XRAY_CONE_DISABLED"] = "true";
-        }
+        await StartGuardAsync("-config ..\\data\\last.json");
+        return new Socks5Server(IPAddress.Loopback.ToString(), this.Socks5LocalPort(), s.Hostname);
     }
 }

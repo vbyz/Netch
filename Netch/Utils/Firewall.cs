@@ -1,79 +1,75 @@
-﻿using System;
-using System.IO;
-using System.Linq;
-using WindowsFirewallHelper;
+﻿using WindowsFirewallHelper;
 using WindowsFirewallHelper.FirewallRules;
 
-namespace Netch.Utils
+namespace Netch.Utils;
+
+public static class Firewall
 {
-    public static class Firewall
+    private const string Netch = "Netch";
+
+    /// <summary>
+    ///     Netch 自带程序添加防火墙
+    /// </summary>
+    public static void AddNetchFwRules()
     {
-        private const string Netch = "Netch";
-
-        /// <summary>
-        ///     Netch 自带程序添加防火墙
-        /// </summary>
-        public static void AddNetchFwRules()
+        if (!FirewallWAS.IsLocallySupported)
         {
-            if (!FirewallWAS.IsSupported)
-            {
-                Global.Logger.Warning("不支持防火墙");
-                return;
-            }
-
-            try
-            {
-                var rule = FirewallManager.Instance.Rules.FirstOrDefault(r => r.Name == Netch);
-                if (rule != null)
-                {
-                    if (rule.ApplicationName.StartsWith(Global.NetchDir))
-                        return;
-
-                    RemoveNetchFwRules();
-                }
-
-                foreach (var path in Directory.GetFiles(Global.NetchDir, "*.exe", SearchOption.AllDirectories))
-                    AddFwRule(Netch, path);
-            }
-            catch (Exception e)
-            {
-                Global.Logger.Warning("添加防火墙规则错误(如已关闭防火墙则可无视此错误)\n" + e);
-            }
+            Log.Warning("Windows Firewall Locally Unsupported");
+            return;
         }
 
-        /// <summary>
-        ///     清除防火墙规则 (Netch 自带程序)
-        /// </summary>
-        public static void RemoveNetchFwRules()
+        try
         {
-            if (!FirewallWAS.IsSupported)
-                return;
+            var rule = FirewallManager.Instance.Rules.FirstOrDefault(r => r.Name == Netch);
+            if (rule != null)
+            {
+                if (rule.ApplicationName.StartsWith(Global.NetchDir))
+                    return;
 
-            try
-            {
-                foreach (var rule in FirewallManager.Instance.Rules.Where(r
-                    => r.ApplicationName?.StartsWith(Global.NetchDir, StringComparison.OrdinalIgnoreCase) ?? r.Name == Netch))
-                    FirewallManager.Instance.Rules.Remove(rule);
+                RemoveNetchFwRules();
             }
-            catch (Exception e)
-            {
-                Global.Logger.Warning("清除防火墙规则错误\n" + e);
-            }
+
+            foreach (var path in Directory.GetFiles(Global.NetchDir, "*.exe", SearchOption.AllDirectories))
+                AddFwRule(Netch, path);
         }
-
-        #region 封装
-
-        private static void AddFwRule(string ruleName, string exeFullPath)
+        catch (Exception e)
         {
-            var rule = new FirewallWASRule(ruleName,
-                exeFullPath,
-                FirewallAction.Allow,
-                FirewallDirection.Inbound,
-                FirewallProfiles.Private | FirewallProfiles.Public | FirewallProfiles.Domain);
-
-            FirewallManager.Instance.Rules.Add(rule);
+            Log.Warning(e, "Create Netch Firewall rules error");
         }
-
-        #endregion
     }
+
+    /// <summary>
+    ///     清除防火墙规则 (Netch 自带程序)
+    /// </summary>
+    public static void RemoveNetchFwRules()
+    {
+        if (!FirewallWAS.IsLocallySupported)
+            return;
+
+        try
+        {
+            foreach (var rule in FirewallManager.Instance.Rules.Where(r
+                         => r.ApplicationName?.StartsWith(Global.NetchDir, StringComparison.OrdinalIgnoreCase) ?? r.Name == Netch))
+                FirewallManager.Instance.Rules.Remove(rule);
+        }
+        catch (Exception e)
+        {
+            Log.Warning(e, "Remove Netch Firewall rules error");
+        }
+    }
+
+    #region 封装
+
+    private static void AddFwRule(string ruleName, string exeFullPath)
+    {
+        var rule = new FirewallWASRule(ruleName,
+            exeFullPath,
+            FirewallAction.Allow,
+            FirewallDirection.Inbound,
+            FirewallProfiles.Private | FirewallProfiles.Public | FirewallProfiles.Domain);
+
+        FirewallManager.Instance.Rules.Add(rule);
+    }
+
+    #endregion
 }

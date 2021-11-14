@@ -1,275 +1,171 @@
+using System.Diagnostics;
+using System.Text;
+using Microsoft.VisualStudio.Threading;
+using Netch.Enums;
 using Netch.Models;
 using Netch.Utils;
-using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Diagnostics;
-using System.IO;
-using System.Linq;
-using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
-using Timer = System.Timers.Timer;
 
-namespace Netch.Controllers
+namespace Netch.Controllers;
+
+public abstract class Guard
 {
-    public abstract class Guard
+    private FileStream? _logFileStream;
+    private StreamWriter? _logStreamWriter;
+
+    /// <param name="mainFile">application path relative of Netch\bin</param>
+    /// <param name="redirectOutput"></param>
+    /// <param name="encoding">application output encode</param>
+    protected Guard(string mainFile, bool redirectOutput = true, Encoding? encoding = null)
     {
-        private readonly Timer _flushFileStreamTimer = new(300) { AutoReset = true };
+        RedirectOutput = redirectOutput;
 
-        private FileStream? _logFileStream;
+        var fileName = Path.GetFullPath($"bin\\{mainFile}");
 
-        private StreamWriter? _logStreamWriter;
-        private bool _redirectToFile = true;
+        if (!File.Exists(fileName))
+            throw new MessageException(i18N.Translate($"bin\\{mainFile} file not found!"));
 
-        /// <summary>
-        ///     日志文件(重定向输出文件)
-        /// </summary>
-        protected string LogPath => Path.Combine(Global.NetchDir, $"logging\\{Name}.log");
-
-        /// <summary>
-        ///     成功启动关键词
-        /// </summary>
-        protected virtual IEnumerable<string> StartedKeywords { get; set; } = new List<string>();
-
-        /// <summary>
-        ///     启动失败关键词
-        /// </summary>
-        protected virtual IEnumerable<string> StoppedKeywords { get; set; } = new List<string>();
-
-        public abstract string Name { get; }
-
-        /// <summary>
-        ///     主程序名
-        /// </summary>
-        public abstract string MainFile { get; protected set; }
-
-        protected State State { get; set; } = State.Waiting;
-
-        /// <summary>
-        ///     进程是否可以重定向输出
-        /// </summary>
-        protected bool RedirectStd { get; set; } = true;
-
-        protected bool RedirectToFile
+        Instance = new Process
         {
-            get => RedirectStd && _redirectToFile;
-            set => _redirectToFile = value;
-        }
+            StartInfo =
+            {
+                FileName = fileName,
+                WorkingDirectory = $"{Global.NetchDir}\\bin",
+                CreateNoWindow = true,
+                UseShellExecute = !RedirectOutput,
+                RedirectStandardOutput = RedirectOutput,
+                StandardOutputEncoding = RedirectOutput ? encoding : null,
+                RedirectStandardError = RedirectOutput,
+                StandardErrorEncoding = RedirectOutput ? encoding : null,
+                WindowStyle = ProcessWindowStyle.Hidden
+            }
+        };
+    }
 
-        /// <summary>
-        ///     进程实例
-        /// </summary>
-        public Process? Instance { get; private set; }
+    protected string LogPath => Path.Combine(Global.NetchDir, $"logging\\{Name}.log");
 
-        /// <summary>
-        ///     程序输出的编码,
-        /// </summary>
-        protected virtual Encoding? InstanceOutputEncoding { get; } = null;
+    protected virtual IEnumerable<string> StartedKeywords { get; } = new List<string>();
 
-        public abstract void Stop();
+    protected virtual IEnumerable<string> FailedKeywords { get; } = new List<string>();
 
-        /// <summary>
-        ///     停止进程
-        /// </summary>
-        protected void StopInstance()
+    public abstract string Name { get; }
+
+    private State State { get; set; } = State.Waiting;
+
+    private bool RedirectOutput { get; }
+
+    public Process Instance { get; }
+
+    protected async Task StartGuardAsync(string argument, ProcessPriorityClass priority = ProcessPriorityClass.Normal)
+    {
+        State = State.Starting;
+
+        _logFileStream = new FileStream(LogPath, FileMode.Create, FileAccess.Write, FileShare.Read, 4096, true);
+        _logStreamWriter = new StreamWriter(_logFileStream) { AutoFlush = true };
+
+        Instance.StartInfo.Arguments = argument;
+        Instance.Start();
+        Global.Job.AddProcess(Instance);
+
+        if (priority != ProcessPriorityClass.Normal)
+            Instance.PriorityClass = priority;
+
+        if (RedirectOutput)
         {
-            try
+            ReadOutputAsync(Instance.StandardOutput).Forget();
+            ReadOutputAsync(Instance.StandardError).Forget();
+
+            if (!StartedKeywords.Any())
             {
-                if (Instance == null || Instance.HasExited)
-                    return;
-
-                Instance.Kill();
-                Instance.WaitForExit();
-            }
-            catch (Win32Exception e)
-            {
-                Global.Logger.Error($"停止 {MainFile} 错误：\n" + e);
-            }
-            catch
-            {
-                // ignored
-            }
-        }
-
-        /// <summary>
-        ///     仅初始化 <see cref="Instance" />,不设定事件处理方法
-        /// </summary>
-        /// <param name="argument"></param>
-        protected virtual void InitInstance(string argument)
-        {
-            Instance = new Process
-            {
-                StartInfo =
-                {
-                    FileName = Path.GetFullPath($"bin\\{MainFile}"),
-                    WorkingDirectory = $"{Global.NetchDir}\\bin",
-                    Arguments = argument,
-                    CreateNoWindow = true,
-                    UseShellExecute = !RedirectStd,
-                    RedirectStandardOutput = RedirectStd,
-                    StandardOutputEncoding = RedirectStd ? InstanceOutputEncoding : null,
-                    RedirectStandardError = RedirectStd,
-                    StandardErrorEncoding = RedirectStd ? InstanceOutputEncoding : null,
-                    WindowStyle = ProcessWindowStyle.Hidden
-                }
-            };
-
-            if (!File.Exists(Instance.StartInfo.FileName))
-                throw new MessageException(i18N.Translate($"bin\\{MainFile} file not found!"));
-        }
-
-        /// <summary>
-        ///     默认行为启动主程序
-        /// </summary>
-        /// <param name="argument">主程序启动参数</param>
-        /// <param name="priority">进程优先级</param>
-        /// <returns>是否成功启动</returns>
-        protected void StartInstanceAuto(string argument, ProcessPriorityClass priority = ProcessPriorityClass.Normal)
-        {
-            State = State.Starting;
-            // 初始化程序
-            InitInstance(argument);
-
-            if (RedirectToFile)
-                OpenLogFile();
-
-            // 启动程序
-            Instance!.Start();
-            if (priority != ProcessPriorityClass.Normal)
-                Instance.PriorityClass = priority;
-
-            if (RedirectStd)
-            {
-                Task.Run(() => ReadOutput(Instance.StandardOutput));
-                Task.Run(() => ReadOutput(Instance.StandardError));
-
-                if (!StartedKeywords.Any())
-                {
-                    State = State.Started;
-                    return;
-                }
-            }
-            else
-            {
+                // Skip, No started keyword
+                State = State.Started;
                 return;
             }
 
-            // 等待启动
+            // wait ReadOutput change State
             for (var i = 0; i < 1000; i++)
             {
-                Thread.Sleep(10);
+                await Task.Delay(50);
                 switch (State)
                 {
                     case State.Started:
-                        Task.Run(OnKeywordStarted);
+                        OnStarted();
                         return;
                     case State.Stopped:
-                        Stop();
-                        CloseLogFile();
-                        OnKeywordStopped();
+                        await StopGuardAsync();
+                        OnStartFailed();
                         throw new MessageException($"{Name} 控制器启动失败");
                 }
             }
 
-            Stop();
-            OnKeywordTimeout();
+            await StopGuardAsync();
             throw new MessageException($"{Name} 控制器启动超时");
         }
+    }
 
-        #region FileStream
-
-        private void OpenLogFile()
+    private async Task ReadOutputAsync(TextReader reader)
+    {
+        string? line;
+        while ((line = await reader.ReadLineAsync()) != null)
         {
-            if (!RedirectToFile)
-                return;
+            await _logStreamWriter!.WriteLineAsync(line);
+            OnReadNewLine(line);
 
-            _logFileStream = File.Open(LogPath, FileMode.Create, FileAccess.ReadWrite, FileShare.Read);
-            _logStreamWriter = new StreamWriter(_logFileStream);
-
-            _flushFileStreamTimer.Elapsed += FlushFileStreamTimerEvent;
-            _flushFileStreamTimer.Enabled = true;
-        }
-
-        private void WriteLog(string line)
-        {
-            if (!RedirectToFile)
-                return;
-
-            _logStreamWriter!.WriteLine(line);
-        }
-
-        private void CloseLogFile()
-        {
-            if (!RedirectToFile)
-                return;
-
-            _flushFileStreamTimer.Enabled = false;
-            _logStreamWriter?.Close();
-            _logFileStream?.Close();
-            _logStreamWriter = _logStreamWriter = null;
-        }
-
-        #endregion
-
-        #region virtual
-
-        protected virtual void OnReadNewLine(string line)
-        {
-        }
-
-        protected virtual void OnKeywordStarted()
-        {
-        }
-
-        protected virtual void OnKeywordStopped()
-        {
-            Utils.Utils.Open(LogPath);
-        }
-
-        protected virtual void OnKeywordTimeout()
-        {
-        }
-
-        #endregion
-
-        protected void ReadOutput(TextReader reader)
-        {
-            string? line;
-            while ((line = reader.ReadLine()) != null)
+            if (State == State.Starting)
             {
-                WriteLog(line);
-                OnReadNewLine(line);
-
-                // State == State.Started if !StartedKeywords.Any() 
-                if (State == State.Starting)
+                if (StartedKeywords.Any(s => line.Contains(s)))
+                    State = State.Started;
+                else if (FailedKeywords.Any(s => line.Contains(s)))
                 {
-                    if (StartedKeywords.Any(s => line.Contains(s)))
-                        State = State.Started;
-                    else if (StoppedKeywords.Any(s => line.Contains(s)))
-                        State = State.Stopped;
+                    OnStartFailed();
+                    State = State.Stopped;
                 }
             }
+        }
+    }
 
-            CloseLogFile();
+    public virtual Task StopAsync()
+    {
+        return StopGuardAsync();
+    }
+
+    protected async Task StopGuardAsync()
+    {
+        try
+        {
+            if (Instance is { HasExited: false })
+            {
+                Instance.Kill();
+                await Instance.WaitForExitAsync();
+            }
+        }
+        catch (Exception e)
+        {
+            Log.Error(e, "Stop {Name} failed", Instance.ProcessName);
+        }
+        finally
+        {
+            if (_logStreamWriter != null)
+                await _logStreamWriter.DisposeAsync();
+
+            if (_logFileStream != null)
+                await _logFileStream.DisposeAsync();
+
+            Instance.Dispose();
+
             State = State.Stopped;
         }
+    }
 
-        /// <summary>
-        ///     计时器存储日志
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
-        private void FlushFileStreamTimerEvent(object sender, EventArgs e)
-        {
-            try
-            {
-                _logStreamWriter!.Flush();
-            }
-            catch (Exception exception)
-            {
-                Global.Logger.Warning($"写入 {Name} 日志错误：\n" + exception.Message);
-            }
-        }
+    protected virtual void OnStarted()
+    {
+    }
+
+    protected virtual void OnReadNewLine(string line)
+    {
+    }
+
+    protected virtual void OnStartFailed()
+    {
+        Utils.Utils.Open(LogPath);
     }
 }
